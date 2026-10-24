@@ -1,7 +1,9 @@
 name: 构建安卓 APK
 
 on:
+  # 网页上手动点按钮也能触发
   workflow_dispatch:
+  # 往任意分支上传文件都自动构建，不用管分支叫 main 还是 master
   push:
     branches: [ "**" ]
 
@@ -17,22 +19,23 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: 取出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 准备 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 安装编译依赖
+      # autoconf/automake/libtool 是编译 Python 必需的，机器只自带 autoconf，
+      # 其余开发库一并补齐；整行带兜底，装不上也不中断
+      - name: 补装编译用的开发库
         run: |
-          sudo apt-get update -y
+          sudo apt-get update -y || true
           sudo apt-get install -y --no-install-recommends \
-            git zip unzip openjdk-17-jdk autoconf automake libtool pkg-config \
-            zlib1g-dev libbz2-dev liblzma-dev libffi-dev libssl-dev \
-            cmake build-essential ccache patch
+            autoconf automake libtool \
+            zlib1g-dev libbz2-dev liblzma-dev libffi-dev libssl-dev || true
 
-      - name: 缓存 Buildozer 下载内容
+      - name: 缓存 Buildozer 下载内容（改了 buildozer.spec 才需要重新冷构建）
         uses: actions/cache@v4
         with:
           path: |
