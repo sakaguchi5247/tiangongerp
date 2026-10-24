@@ -1,0 +1,47 @@
+name: 构建安卓 APK
+
+on:
+  # 网页上手动点按钮也能触发
+  workflow_dispatch:
+  # 往任意分支上传文件都自动构建，不用管分支叫 main 还是 master
+  push:
+    branches: [ "**" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip openjdk-17-jdk autoconf libtool \
+            pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            cmake libffi-dev libssl-dev build-essential ccache
+
+      - name: 缓存 Buildozer 下载内容（改了 buildozer.spec 才需要重新冷构建）
+        uses: actions/cache@v4
+        with:
+          path: |
+            .buildozer
+            ~/.buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+
+      - name: 安装 Buildozer
+        run: pip install buildozer cython==0.29.37
+
+      - name: 构建 APK
+        run: buildozer -v android debug
+
+      - name: 上传 APK 供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiangongerp-apk
+          path: bin/*.apk
