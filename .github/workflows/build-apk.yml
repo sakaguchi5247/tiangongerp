@@ -1,15 +1,14 @@
 name: 构建安卓 APK
 
 on:
-  # 网页上手动点按钮也能触发
   workflow_dispatch:
-  # 往任意分支上传文件都自动构建，不用管分支叫 main 还是 master
   push:
     branches: [ "**" ]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # 用最新款 Ubuntu（固定写 22.04 会因 GitHub 退役旧镜像而失败）
+    runs-on: ubuntu-latest
     steps:
       - name: 取出代码
         uses: actions/checkout@v4
@@ -23,10 +22,10 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y git zip unzip openjdk-17-jdk autoconf libtool \
-            pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            pkg-config zlib1g-dev libncurses-dev libtinfo-dev \
             cmake libffi-dev libssl-dev build-essential ccache
 
-      - name: 缓存 Buildozer 下载内容（改了 buildozer.spec 才需要重新冷构建）
+      - name: 缓存 Buildozer 下载内容
         uses: actions/cache@v4
         with:
           path: |
