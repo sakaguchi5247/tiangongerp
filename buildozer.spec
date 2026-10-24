@@ -18,8 +18,8 @@ source.include_exts = py,png
 requirements = python3
 
 # ---------------- 屏幕 ----------------
-# 跟随系统旋转，用户可自己转横屏看表格
-orientation = sensor
+# 竖屏（手机开单竖着更好用）；想跟随系统旋转就把它改回 sensor
+orientation = portrait
 fullscreen = 0
 
 # ---------------- 安卓 ----------------
