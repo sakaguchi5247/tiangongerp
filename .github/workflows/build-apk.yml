@@ -46,11 +46,34 @@ jobs:
       - name: 安装 Buildozer
         run: pip install buildozer cython==0.29.37
 
+      # 全程输出存档到 build_output.txt；pipefail 保证失败如实上报
       - name: 构建 APK
-        # yes 用来自动应答安卓 SDK 的协议询问，否则云端无人会卡住
-        run: yes | buildozer -v android debug
+        run: |
+          set -o pipefail
+          yes | buildozer -v android debug 2>&1 | tee build_output.txt
+
+      # 失败时把真正的报错自动提到日志末尾，不用再人工翻几千行
+      - name: 失败时自动提取关键报错
+        if: failure()
+        run: |
+          echo "========== 1. 失败的那条命令（Command failed）及其前 20 行 =========="
+          grep -n -B20 -A3 "Command failed" build_output.txt || echo "(未找到)"
+          echo ""
+          echo "========== 2. 所有 error / fatal / Traceback 行 =========="
+          grep -n -i -E "error:|fatal:|exception|traceback|FAILURE" build_output.txt | head -50 || echo "(未找到)"
+          echo ""
+          echo "========== 3. 日志最后 60 行 =========="
+          tail -60 build_output.txt
+
+      - name: 上传完整构建日志存档
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_output.txt
 
       - name: 上传 APK 供下载
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: tiangongerp-apk
