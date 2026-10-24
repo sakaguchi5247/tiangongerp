@@ -5,10 +5,16 @@ on:
   push:
     branches: [ "**" ]
 
+# 同时只跑一个，新任务来了就取消旧的，省得白等
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
 jobs:
   build:
     # 用最新款 Ubuntu（固定写 22.04 会因 GitHub 退役旧镜像而失败）
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: 取出代码
         uses: actions/checkout@v4
@@ -20,10 +26,11 @@ jobs:
 
       - name: 安装编译依赖
         run: |
-          sudo apt update
-          sudo apt install -y git zip unzip openjdk-17-jdk autoconf libtool \
-            pkg-config zlib1g-dev libncurses-dev libtinfo-dev \
-            cmake libffi-dev libssl-dev build-essential ccache
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip openjdk-17-jdk autoconf automake libtool pkg-config \
+            zlib1g-dev libbz2-dev liblzma-dev libffi-dev libssl-dev \
+            cmake build-essential ccache patch
 
       - name: 缓存 Buildozer 下载内容
         uses: actions/cache@v4
@@ -37,7 +44,8 @@ jobs:
         run: pip install buildozer cython==0.29.37
 
       - name: 构建 APK
-        run: buildozer -v android debug
+        # yes 用来自动应答安卓 SDK 的协议询问，否则云端无人会卡住
+        run: yes | buildozer -v android debug
 
       - name: 上传 APK 供下载
         uses: actions/upload-artifact@v4
