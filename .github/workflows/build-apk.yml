@@ -29,29 +29,36 @@ jobs:
           docker --version || echo ">>> DOCKER 不可用"
           docker info >/dev/null 2>&1 && echo ">>> docker daemon OK" || echo ">>> docker daemon 起不来"
 
-      - name: 预置 Android SDK 许可证（绕过交互式 Accept 提示）
-        run: |
-          # buildozer 在官方镜像里不会自动接受许可证（会弹 Accept? (y/N) 并默认跳过），
-          # 导致 build-tools 装不上。这里直接把"已接受"的许可证哈希文件准备好，
-          # 构建时挂载进容器 SDK 的 licenses 目录，sdkmanager 看到即不再提示。
-          mkdir -p licenses
-          printf '8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n' > licenses/android-sdk-license
-          printf '24333f8a63b6825ea9c5514f83c2829b004d1fee\n' > licenses/android-sdk-preview-license
-          echo ">>> 已生成许可证文件："
-          ls -la licenses/
-
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
           # 关键：捕获管道中任意命令（含 docker）的失败，否则 tee 会掩盖退出码误报成功
           set -o pipefail
           # 让挂载进容器的目录可被镜像内默认用户写入，避免权限报错
           chmod -R a+rwX .
+          # 不能用「挂载 licenses 目录」的方式预置许可证——那会顺带在容器内预建空的
+          # android-sdk 目录，导致 buildozer 误判 SDK 已存在、跳过下载 cmdline-tools(sdkmanager)。
+          # 正确做法：先让 buildozer 下载好整套 SDK/NDK/cmdline-tools（第一次会因许可证交互提示失败，
+          # 但 sdkmanager 已就位），再用 sdkmanager --licenses 真正接受，最后第二次完整编译打包。
           docker run --rm \
             -v "$PWD":/home/user/hostcwd \
-            -v "$PWD/licenses":/home/user/.buildozer/android/platform/android-sdk/licenses \
             -w /home/user/hostcwd \
+            --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            android debug 2>&1 | tee build_output.txt
+            -c "
+              set -o pipefail
+              cd /home/user/hostcwd
+              echo '>>> 第 1 次：下载 SDK/NDK/cmdline-tools（许可证提示会使其失败，属预期）'
+              buildozer android debug 2>&1 | tee /tmp/build1.log || true
+              SDK=/home/user/.buildozer/android/platform/android-sdk
+              if [ -x \"\$SDK/cmdline-tools/latest/bin/sdkmanager\" ]; then
+                echo '>>> 自动接受所有 SDK 许可证'
+                yes | \"\$SDK/cmdline-tools/latest/bin/sdkmanager\" --licenses || true
+              else
+                echo '>>> 警告：未找到 sdkmanager，可能 SDK 未下载'
+              fi
+              echo '>>> 第 2 次：许可证已接受，完整编译并打包 APK'
+              buildozer android debug 2>&1 | tee build_output.txt
+            "
 
       - name: 上传 APK 供下载
         if: success()
