@@ -29,32 +29,74 @@ jobs:
           docker --version || echo ">>> DOCKER 不可用"
           docker info >/dev/null 2>&1 && echo ">>> docker daemon OK" || echo ">>> docker daemon 起不来"
 
-      - name: 补齐 six 本地配方（绕开有问题的 pip 步骤）
+      - name: 切换到 p4a develop 分支（本轮关键修复）
         run: |
-          # 背景：第十六版已经把 Python/Android 原生库全部交叉编译完成，只差最后一步——
-          # p4a 依赖图里带了 six，但 master 版没有 six 配方，于是回退用 pip 安装；
-          # 而 p4a 为此新建的 venv 里 pip 自升级会把自身搞坏
-          # （ImportError: cannot import name 'BuildDependencyInstallError'）。
-          # 解法：提供一个 six 本地配方，让 p4a 走源码安装，彻底不碰 pip 那一步。
-          mkdir -p recipes/six
-          cat > recipes/six/__init__.py <<'PYEOF'
-          from pythonforandroid.recipe import PythonRecipe
+          # ================= 根因说明 =================
+          # 上一版（第十六、十七版）已经把 Python/Android 原生库全部交叉编译成功
+          # （hostpython3 / openssl / sqlite3 / python3 / pyjnius / _android*.so 均已
+          #   生成并 strip），唯独卡在最后一步：
+          #     [INFO]: PYTHON PACKAGE / PROJECT INSTALL STAGE
+          #     -> python -m venv venv
+          #     -> source venv/bin/activate && pip install -U pip
+          #     ImportError: cannot import name 'BuildDependencyInstallError'
+          # 追到 p4a 源码，真凶是「master 分支」独有的两处：
+          #   1) pythonforandroid/recipes/pyjnius/__init__.py
+          #        master : depends = [('genericndkbuild','sdl2','sdl3'), 'six']
+          #        develop: depends = [('genericndkbuild','sdl2','sdl3')]   <- six 已被删除
+          #     而 p4a 历代版本都没有 six 配方，于是 six 只能回退用 pip 安装；
+          #   2) pythonforandroid/build.py:876-878
+          #        master : info('Upgrade pip to latest version')
+          #                 sh.bash('-c', "source venv/bin/activate && pip install -U pip")
+          #        develop: 该段已被整体删除，改用 pip install --target <site-packages> 直装。
+          # 两者叠加 = six 触发 pip 安装 -> 临时 venv 自升级把 pip 弄坏 -> 构建崩溃。
+          # 而 p4a 的 develop 分支同时修好了这两点，且 python3 配方版本同为 3.14.2，
+          # 故直接切 develop，从根上绕开，不需要再提供 six 本地配方。
+          # ============================================
+          python3 - <<'PYEOF'
+          import io
 
+          path = 'buildozer.spec'
+          text = io.open(path, encoding='utf-8').read()
+          lines = text.split('\n')
+          stripped = [l.strip() for l in lines]
 
-          class SixRecipe(PythonRecipe):
-              version = '1.16.0'
-              url = 'https://files.pythonhosted.org/packages/source/s/six/six-{version}.tar.gz'
-              depends = []
-              call_hostpython_via_targetpython = False
+          # 定位 [app] 段：从 [app] 行起，到下一个顶层段落头之前
+          start = stripped.index('[app]')
+          end = len(lines)
+          for i in range(start + 1, len(lines)):
+              if lines[i].lstrip().startswith('['):
+                  end = i
+                  break
 
+          seg = lines[start:end]
+          # 清掉旧值，保证幂等
+          seg = [l for l in seg if not l.lstrip().startswith('p4a.branch')]
 
-          recipe = SixRecipe()
+          # 插到 [app] 段最后一个非空行之后
+          last = len(seg) - 1
+          while last > 0 and seg[last].strip() == '':
+              last -= 1
+          seg[last + 1:last + 1] = ['', 'p4a.branch = develop']
+          lines[start:end] = seg
+
+          io.open(path, 'w', encoding='utf-8').write('\n'.join(lines))
+
+          # ------- 自检：必须真的落在 [app] 段内，否则立刻失败，不浪费 15 分钟 -------
+          # （第十七版就是踩了这个坑：把配置追加到 spec 文件末尾，落进 [buildozer] 段被忽略）
+          lines = io.open(path, encoding='utf-8').read().split('\n')
+          s = [l.strip() for l in lines].index('[app]')
+          e = len(lines)
+          for i in range(s + 1, len(lines)):
+              if lines[i].lstrip().startswith('['):
+                  e = i
+                  break
+          hit = [l for l in lines[s:e] if l.lstrip().startswith('p4a.branch')]
+          print('>>> [app] 段内的 p4a.branch 行：', hit)
+          assert len(hit) == 1 and 'develop' in hit[0], '!!! p4a.branch 未正确写入 [app] 段'
+          print('>>> 自检通过：p4a 将使用 develop 分支')
           PYEOF
-          echo ">>> 已生成 six 本地配方："
-          cat recipes/six/__init__.py
-          printf '\np4a.local_recipes = recipes\n' >> buildozer.spec
-          echo ">>> 已追加 local_recipes 配置："
-          grep -n "p4a.local_recipes" buildozer.spec || true
+          echo "===== 最终生效的关键配置 ====="
+          grep -n "p4a.branch\|p4a.port\|requirements\|p4a.bootstrap" buildozer.spec || true
 
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
@@ -73,6 +115,16 @@ jobs:
             -w /home/user/hostcwd \
             ghcr.io/kivy/buildozer:latest \
             android debug 2>&1 | tee build_output.txt
+
+      - name: 失败时直接把关键报错打到页面上
+        if: failure()
+        run: |
+          echo "===== 构建日志最后 60 行 ====="
+          tail -n 60 build_output.txt || true
+          echo "===== 失败命令定位（含上下文）====="
+          grep -n "BUILD FAILED\|Command failed\|Error code\|ERROR:" build_output.txt | tail -n 20 || true
+          echo "===== 是否还在走 venv/pip 自升级（应为空）====="
+          grep -n "Upgrade pip to latest\|source venv/bin/activate" build_output.txt || echo ">>> 好：没有再走 venv/pip 自升级"
 
       - name: 上传 APK 供下载
         if: success()
