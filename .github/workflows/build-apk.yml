@@ -32,10 +32,16 @@ jobs:
       - name: 自动接受 Android SDK 许可证
         run: |
           # buildozer 默认拒绝自动接受 Google SDK 许可证，导致 build-tools 装不上
-          # （报 Aidl not found）。这里把 spec 里的开关打开。
-          sed -i 's/^#\?android\.accept_sdk_license.*/android.accept_sdk_license = True/' buildozer.spec
+          # （报 Aidl not found）。这里确保 spec 里有这个开关并打开。
+          if ! grep -q '^android\.accept_sdk_license' buildozer.spec; then
+            # 先删掉任何残留的（注释或生效）同名行，再在末尾追加
+            sed -i '/^#\?android\.accept_sdk_license/d' buildozer.spec
+            printf '\nandroid.accept_sdk_license = True\n' >> buildozer.spec
+          else
+            sed -i 's/^#\?android\.accept_sdk_license.*/android.accept_sdk_license = True/' buildozer.spec
+          fi
           echo ">>> 修改后的关键行："
-          grep -n "accept_sdk_license" buildozer.spec
+          grep -n "accept_sdk_license" buildozer.spec || true
 
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
