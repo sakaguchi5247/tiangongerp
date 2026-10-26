@@ -15,27 +15,37 @@ concurrency:
 jobs:
   build:
     # 直接用官方 kivy/buildozer Docker 镜像（ghcr.io/kivy/buildozer:latest，
-    # 即 buildozer 官方 CI 用的环境），它自带：
-    #   - 与 libffi 兼容的 libtool / autoconf / automake 工具链（绕开 Ubuntu 24.04
-    #     系统 libtool 2.4.7 删除 LT_SYS_SYMBOL_USCORE 宏导致 libffi 编译失败的坑）
-    #   - 预装好的 Android SDK / NDK / JDK（不用现场下载，省时）
-    # 之所以不用第三方 buildozer-action@v1：它的 Dockerfile 引用了已失效的
-    # ppa:openjdk-r/ppa，镜像构建阶段就挂，1 分钟必失败。
+    # 即 buildozer 官方 CI 用的环境）。它自带与 libffi 兼容的工具链、预装
+    # Android SDK/NDK/JDK，从根上绕开 Ubuntu 24.04 系统 libtool 2.4.7 删除
+    # LT_SYS_SYMBOL_USCORE 宏导致 libffi 编译失败的坑。
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - name: 取出代码
         uses: actions/checkout@v5
 
+      - name: 确认 docker 可用
+        run: |
+          docker --version || echo ">>> DOCKER 不可用"
+          docker info >/dev/null 2>&1 && echo ">>> docker daemon OK" || echo ">>> docker daemon 起不来"
+
+      - name: 自动接受 Android SDK 许可证
+        run: |
+          # buildozer 默认拒绝自动接受 Google SDK 许可证，导致 build-tools 装不上
+          # （报 Aidl not found）。这里把 spec 里的开关打开。
+          sed -i 's/^#\?android\.accept_sdk_license.*/android.accept_sdk_license = True/' buildozer.spec
+          echo ">>> 修改后的关键行："
+          grep -n "accept_sdk_license" buildozer.spec
+
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
-          # 让挂载进容器的目录可被镜像内默认用户(1000)写入，避免权限报错
+          # 让挂载进容器的目录可被镜像内默认用户写入，避免权限报错
           chmod -R a+rwX .
           docker run --rm \
             -v "$PWD":/home/user/hostcwd \
             -w /home/user/hostcwd \
             ghcr.io/kivy/buildozer:latest \
-            android debug
+            android debug 2>&1 | tee build_output.txt
 
       - name: 上传 APK 供下载
         if: success()
@@ -44,13 +54,14 @@ jobs:
           name: tiangongerp-apk
           path: bin/
 
-      # 失败兜底：把 .buildozer 构建缓存（含日志）和 bin/ 传上来，方便继续定位
-      - name: 上传失败日志
-        if: failure()
+      # 无论成败都留一份完整日志（含 docker / buildozer 全部输出），方便定位
+      - name: 上传构建日志
+        if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: |
+            build_output.txt
             .buildozer/
             bin/
