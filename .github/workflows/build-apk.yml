@@ -29,26 +29,26 @@ jobs:
           docker --version || echo ">>> DOCKER 不可用"
           docker info >/dev/null 2>&1 && echo ">>> docker daemon OK" || echo ">>> docker daemon 起不来"
 
-      - name: 自动接受 Android SDK 许可证
+      - name: 预置 Android SDK 许可证（绕过交互式 Accept 提示）
         run: |
-          # buildozer 默认拒绝自动接受 Google SDK 许可证，导致 build-tools 装不上
-          # （报 Aidl not found）。这里确保 spec 里有这个开关并打开。
-          if ! grep -q '^android\.accept_sdk_license' buildozer.spec; then
-            # 先删掉任何残留的（注释或生效）同名行，再在末尾追加
-            sed -i '/^#\?android\.accept_sdk_license/d' buildozer.spec
-            printf '\nandroid.accept_sdk_license = True\n' >> buildozer.spec
-          else
-            sed -i 's/^#\?android\.accept_sdk_license.*/android.accept_sdk_license = True/' buildozer.spec
-          fi
-          echo ">>> 修改后的关键行："
-          grep -n "accept_sdk_license" buildozer.spec || true
+          # buildozer 在官方镜像里不会自动接受许可证（会弹 Accept? (y/N) 并默认跳过），
+          # 导致 build-tools 装不上。这里直接把"已接受"的许可证哈希文件准备好，
+          # 构建时挂载进容器 SDK 的 licenses 目录，sdkmanager 看到即不再提示。
+          mkdir -p licenses
+          printf '8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n' > licenses/android-sdk-license
+          printf '24333f8a63b6825ea9c5514f83c2829b004d1fee\n' > licenses/android-sdk-preview-license
+          echo ">>> 已生成许可证文件："
+          ls -la licenses/
 
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
+          # 关键：捕获管道中任意命令（含 docker）的失败，否则 tee 会掩盖退出码误报成功
+          set -o pipefail
           # 让挂载进容器的目录可被镜像内默认用户写入，避免权限报错
           chmod -R a+rwX .
           docker run --rm \
             -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/licenses":/home/user/.buildozer/android/platform/android-sdk/licenses \
             -w /home/user/hostcwd \
             ghcr.io/kivy/buildozer:latest \
             android debug 2>&1 | tee build_output.txt
