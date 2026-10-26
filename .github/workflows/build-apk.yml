@@ -29,6 +29,33 @@ jobs:
           docker --version || echo ">>> DOCKER 不可用"
           docker info >/dev/null 2>&1 && echo ">>> docker daemon OK" || echo ">>> docker daemon 起不来"
 
+      - name: 补齐 six 本地配方（绕开有问题的 pip 步骤）
+        run: |
+          # 背景：第十六版已经把 Python/Android 原生库全部交叉编译完成，只差最后一步——
+          # p4a 依赖图里带了 six，但 master 版没有 six 配方，于是回退用 pip 安装；
+          # 而 p4a 为此新建的 venv 里 pip 自升级会把自身搞坏
+          # （ImportError: cannot import name 'BuildDependencyInstallError'）。
+          # 解法：提供一个 six 本地配方，让 p4a 走源码安装，彻底不碰 pip 那一步。
+          mkdir -p recipes/six
+          cat > recipes/six/__init__.py <<'PYEOF'
+          from pythonforandroid.recipe import PythonRecipe
+
+
+          class SixRecipe(PythonRecipe):
+              version = '1.16.0'
+              url = 'https://files.pythonhosted.org/packages/source/s/six/six-{version}.tar.gz'
+              depends = []
+              call_hostpython_via_targetpython = False
+
+
+          recipe = SixRecipe()
+          PYEOF
+          echo ">>> 已生成 six 本地配方："
+          cat recipes/six/__init__.py
+          printf '\np4a.local_recipes = recipes\n' >> buildozer.spec
+          echo ">>> 已追加 local_recipes 配置："
+          grep -n "p4a.local_recipes" buildozer.spec || true
+
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
           set -o pipefail
