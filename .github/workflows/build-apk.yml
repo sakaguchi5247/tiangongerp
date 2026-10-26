@@ -14,37 +14,43 @@ concurrency:
 
 jobs:
   build:
-    # 用官方 Buildozer Docker 镜像（ghcr.io/kivy/buildozer），
-    # 镜像里自带与 libffi 兼容的 libtool / autoconf / automake 工具链，
-    # 从根本上绕开 Ubuntu 24.04 自带 libtool 2.4.7 与新版 libffi configure.ac
-    # 不兼容（possibly undefined macro: LT_SYS_SYMBOL_USCORE）的坑
+    # 直接用官方 kivy/buildozer Docker 镜像（ghcr.io/kivy/buildozer:latest，
+    # 即 buildozer 官方 CI 用的环境），它自带：
+    #   - 与 libffi 兼容的 libtool / autoconf / automake 工具链（绕开 Ubuntu 24.04
+    #     系统 libtool 2.4.7 删除 LT_SYS_SYMBOL_USCORE 宏导致 libffi 编译失败的坑）
+    #   - 预装好的 Android SDK / NDK / JDK（不用现场下载，省时）
+    # 之所以不用第三方 buildozer-action@v1：它的 Dockerfile 引用了已失效的
+    # ppa:openjdk-r/ppa，镜像构建阶段就挂，1 分钟必失败。
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - name: 取出代码
         uses: actions/checkout@v5
 
-      - name: 用 Buildozer 构建 APK
-        # 官方维护的 action，内部使用 kivy/buildozer Docker 镜像，
-        # 已成功用于 KivyMD 等大量项目；buildozer.spec 在仓库根目录，workdir 用 .
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          workdir: .
-          buildozer_version: stable
+      - name: 用官方 Buildozer 镜像构建 APK
+        run: |
+          # 让挂载进容器的目录可被镜像内默认用户(1000)写入，避免权限报错
+          chmod -R a+rwX .
+          docker run --rm \
+            -v "$PWD":/home/user/hostcwd \
+            -w /home/user/hostcwd \
+            ghcr.io/kivy/buildozer:latest \
+            android debug
 
       - name: 上传 APK 供下载
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: tiangongerp-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/
 
-      # 失败兜底：把 .buildozer 构建缓存（含日志）传上来，方便继续定位
+      # 失败兜底：把 .buildozer 构建缓存（含日志）和 bin/ 传上来，方便继续定位
       - name: 上传失败日志
         if: failure()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: .buildozer/
+          path: |
+            .buildozer/
+            bin/
