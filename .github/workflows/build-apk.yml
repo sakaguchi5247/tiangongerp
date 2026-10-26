@@ -26,28 +26,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      # autoconf/automake/libtool 是编译 Python 必需的，机器只自带 autoconf，
-      # 其余开发库一并补齐；整行带兜底，装不上也不中断
+      # autotools 全家桶：编译 libffi / Python 需要；libtool-bin 提供 libtoolize，
+      # gettext 提供 autopoint，缺了会出现 "possibly undefined macro" 类报错
       - name: 补装编译用的开发库
         run: |
           sudo apt-get update -y || true
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool \
+            autoconf automake libtool libtool-bin gettext autoconf-archive m4 \
             zlib1g-dev libbz2-dev liblzma-dev libffi-dev libssl-dev || true
 
-      - name: 缓存 Buildozer 下载内容（改了 buildozer.spec 才需要重新冷构建）
-        uses: actions/cache@v4
-        with:
-          path: |
-            .buildozer
-            ~/.buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
+      - name: 构建前环境自检
+        run: |
+          aclocal --version | head -1
+          autoconf --version | head -1
+          automake --version | head -1
+          libtoolize --version | head -1
+          ls -la /usr/share/aclocal/libtool.m4
 
       - name: 安装 Buildozer
         run: pip install buildozer cython==0.29.37
 
+      # ACLOCAL_PATH 指向系统宏目录，确保 libtool.m4 等宏一定被 aclocal 索引到
       # 全程输出存档到 build_output.txt；pipefail 保证失败如实上报
       - name: 构建 APK
+        env:
+          ACLOCAL_PATH: /usr/share/aclocal
         run: |
           set -o pipefail
           yes | buildozer -v android debug 2>&1 | tee build_output.txt
