@@ -10,7 +10,7 @@ version = 1.0.0
 # 目录名用英文，避免 Buildozer 在 Linux 下处理中文路径出现编码问题
 source.dir = app
 # 只打 Python 源码与徽标 PNG；桌面端 tkinter 代码已在本包内剔除
-source.include_exts = py,png
+source.include_exts = py,png,sql
 
 # ---------------- 依赖（本项目零第三方依赖） ----------------
 # 只要 Python 运行时本身，不引入 Kivy / Flask / 任何库，
