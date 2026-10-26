@@ -31,34 +31,21 @@ jobs:
 
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
-          # 关键：捕获管道中任意命令（含 docker）的失败，否则 tee 会掩盖退出码误报成功
           set -o pipefail
-          # 让挂载进容器的目录可被镜像内默认用户写入，避免权限报错
           chmod -R a+rwX .
-          # 不能用「挂载 licenses 目录」的方式预置许可证——那会顺带在容器内预建空的
-          # android-sdk 目录，导致 buildozer 误判 SDK 已存在、跳过下载 cmdline-tools(sdkmanager)。
-          # 正确做法：先让 buildozer 下载好整套 SDK/NDK/cmdline-tools（第一次会因许可证交互提示失败，
-          # 但 sdkmanager 已就位），再用 sdkmanager --licenses 真正接受，最后第二次完整编译打包。
-          docker run --rm \
+          # 两个关键点，缺一不可：
+          # 1) 必须用镜像的默认 entrypoint。它会把容器内用户切成宿主 UID；
+          #    若手动指定 --entrypoint bash，容器会以 root 运行，buildozer 会弹
+          #    "Are you sure you want to continue [y/n]?"，CI 非交互环境 stdin 为 EOF
+          #    → 立刻 EOFError 崩溃（第 15 版即死于此，35 秒挂）。
+          # 2) 加 -i 附加标准输入，并用 yes 管道。SDK 许可证安装 build-tools 时会询问
+          #    Accept? (y/N)，非交互下默认跳过 → build-tools 装不上 → Aidl not found。
+          #    yes 会自动回答 y，许可证得以接受。
+          yes | docker run --rm -i \
             -v "$PWD":/home/user/hostcwd \
             -w /home/user/hostcwd \
-            --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            -c "
-              set -o pipefail
-              cd /home/user/hostcwd
-              echo '>>> 第 1 次：下载 SDK/NDK/cmdline-tools（许可证提示会使其失败，属预期）'
-              buildozer android debug 2>&1 | tee /tmp/build1.log || true
-              SDK=/home/user/.buildozer/android/platform/android-sdk
-              if [ -x \"\$SDK/cmdline-tools/latest/bin/sdkmanager\" ]; then
-                echo '>>> 自动接受所有 SDK 许可证'
-                yes | \"\$SDK/cmdline-tools/latest/bin/sdkmanager\" --licenses || true
-              else
-                echo '>>> 警告：未找到 sdkmanager，可能 SDK 未下载'
-              fi
-              echo '>>> 第 2 次：许可证已接受，完整编译并打包 APK'
-              buildozer android debug 2>&1 | tee build_output.txt
-            "
+            android debug 2>&1 | tee build_output.txt
 
       - name: 上传 APK 供下载
         if: success()
