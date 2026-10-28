@@ -158,6 +158,57 @@ jobs:
               assert len(hit) == 1, '!!! %s 未正确写入 [app] 段 (命中 %d 条)' % (key, len(hit))
               print('>>> OK [app]:', hit[0].strip())
           PYEOF
+      - name: 用载荷覆盖 app 目录
+        run: |
+          # 仓库根目录的 app_src.b64 是「桌面端交付包同步结果」的压缩包。
+          # 有它就用它覆盖 app/，保证 APK 里打的永远是最新的代码；
+          # 没有它就沿用仓库里的 app/ —— 这一步永远是可选的，绝不让构建失败。
+          if [ ! -f app_src.b64 ]; then
+            echo ">>> 仓库里没有 app_src.b64，沿用仓库自带的 app/ 目录"
+            exit 0
+          fi
+          python3 - <<'PYEOF'
+          import base64, hashlib, io, lzma, os, shutil, tarfile
+
+          b64 = open('app_src.b64', encoding='ascii').read()
+          comp = base64.b64decode(''.join(b64.split()))
+          sha = hashlib.sha256(comp).hexdigest()
+          print('>>> 载荷 sha256 =', sha)
+
+          if os.path.isfile('app_src.sha256'):
+              want = open('app_src.sha256').read().strip()
+              if want and want != sha:
+                  raise SystemExit('!!! 载荷校验失败：期望 %s，实际 %s' % (want, sha))
+              print('>>> 校验通过')
+
+          raw = lzma.decompress(comp)
+          tmp = 'app_payload_tmp'
+          shutil.rmtree(tmp, ignore_errors=True)
+          os.makedirs(tmp)
+          with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+              tf.extractall(tmp)
+
+          src = os.path.join(tmp, 'app')
+          if not os.path.isdir(src):
+              raise SystemExit('!!! 载荷里没有 app/ 目录')
+
+          # 先改名再拷贝：拷贝失败还能把原来的 app/ 换回来，不会把构建现场搞坏
+          if os.path.isdir('app'):
+              shutil.move('app', 'app_prev')
+          try:
+              shutil.copytree(src, 'app')
+          except Exception:
+              if os.path.isdir('app'):
+                  shutil.rmtree('app')
+              if os.path.isdir('app_prev'):
+                  shutil.move('app_prev', 'app')
+              raise
+          shutil.rmtree('app_prev', ignore_errors=True)
+          shutil.rmtree(tmp, ignore_errors=True)
+
+          n = sum(len(f) for _, _, f in os.walk('app'))
+          print('>>> 已用载荷覆盖 app/，共 %d 个文件' % n)
+          PYEOF
       - name: 用官方 Buildozer 镜像构建 APK
         run: |
           # 注意：这里千万别开「管道中任一命令失败即整条失败」的 shell 选项。
@@ -190,6 +241,80 @@ jobs:
           cat build_output.txt
           echo "===== docker 真实退出码 = $RC ====="
           exit $RC
+
+      - name: 用固定密钥重签名
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # 为什么必须用固定密钥：
+          # buildozer 的 debug 构建每次都临时生成一把 debug 密钥，密钥一变，
+          # APK 签名就变，新包装不上（提示"应用未安装"），只能先卸载旧版 ——
+          # 而卸载会连带删掉 App 数据目录，也就是手机上录的每一张单据。
+          # 所以用一把自己掌握、跨构建固定的密钥，新包就能直接覆盖安装。
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo ">>> 未配置 ANDROID_KEYSTORE_B64，沿用 buildozer 的 debug 签名"
+            echo ">>> !! 提醒：debug 签名每次构建都不同，新包无法覆盖安装（需先卸载，手机数据会丢）"
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_B64" | tr -d '\n' | base64 -d > tiangong.keystore
+          if [ ! -s tiangong.keystore ]; then
+            echo ">>> !! 密钥解码失败，跳过重签名"
+            exit 0
+          fi
+          chmod 600 tiangong.keystore
+
+          # apksigner 只存在于构建镜像里，宿主机没有，所以这一步也得进容器。
+          # 任何一步失败都只是跳过重签名，绝不把整个构建判红。
+          docker run --rm \
+            -e KEY_ALIAS \
+            -e KEY_PASSWORD \
+            -v "$PWD":/home/user/hostcwd \
+            -w /home/user/hostcwd \
+            --entrypoint bash \
+            ghcr.io/kivy/buildozer:latest \
+            -c '
+              set -e
+              SIGNER=""
+              for p in /opt/android-sdk/build-tools/*/apksigner \
+                       /home/user/.buildozer/android/platform/build-tools/*/apksigner \
+                       /root/.buildozer/android/platform/build-tools/*/apksigner \
+                       $ANDROID_HOME/build-tools/*/apksigner ; do
+                if [ -x "$p" ]; then SIGNER="$p"; break; fi
+              done
+              if [ -z "$SIGNER" ]; then
+                echo "!!! 容器里找不到 apksigner，跳过重签名"
+                exit 3
+              fi
+              echo ">>> 使用签名工具: $SIGNER"
+              APK=$(ls bin/*.apk 2>/dev/null | head -1)
+              if [ -z "$APK" ]; then
+                echo "!!! bin/ 里没有 APK，跳过重签名"
+                exit 4
+              fi
+              echo ">>> 待签名: $APK"
+              "$SIGNER" sign \
+                --ks tiangong.keystore \
+                --ks-type PKCS12 \
+                --ks-key-alias "$KEY_ALIAS" \
+                --ks-pass "pass:$KEY_PASSWORD" \
+                --key-pass "pass:$KEY_PASSWORD" \
+                --out "$APK.signed" "$APK"
+              mv "$APK.signed" "$APK"
+              echo ">>> 签名信息："
+              "$SIGNER" verify --print-certs "$APK" | head -6
+              echo ">>> 重签名完成"
+            ' || echo ">>> !! 重签名未完成，APK 仍是 debug 签名（可安装，但下次需先卸载）"
+          rm -f tiangong.keystore
+
+          # 统一命名：带上版本号与架构，一眼看出装的是哪个
+          for f in bin/*.apk; do
+            [ -f "$f" ] || continue
+            NEW="bin/tiangongerp-$(grep -m1 "^version" buildozer.spec | cut -d= -f2 | tr -d " ")-arm64-v8a.apk"
+            mv "$f" "$NEW"
+            echo ">>> 已重命名: $NEW"
+          done
 
       - name: 失败时直接把关键报错打到页面上
         if: failure()
