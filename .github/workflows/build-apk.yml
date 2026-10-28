@@ -266,7 +266,9 @@ jobs:
           chmod 600 tiangong.keystore
 
           # apksigner 只存在于构建镜像里，宿主机没有，所以这一步也得进容器。
-          # 任何一步失败都只是跳过重签名，绝不把整个构建判红。
+          # 【重要】这里失败绝不能被吞掉：曾因为 apksigner 路径写错（漏了 android-sdk 一层）
+          # 找不到工具 → 静默跳过 → 步骤显示绿色但包其实是 debug 签名，
+          # 等于每次装新版都得先卸载、手机数据全丢。所以现在失败一律判红。
           docker run --rm \
             -e KEY_ALIAS \
             -e KEY_PASSWORD \
@@ -277,20 +279,29 @@ jobs:
             -c '
               set -e
               SIGNER=""
-              for p in /opt/android-sdk/build-tools/*/apksigner \
-                       /home/user/.buildozer/android/platform/build-tools/*/apksigner \
-                       /root/.buildozer/android/platform/build-tools/*/apksigner \
-                       $ANDROID_HOME/build-tools/*/apksigner ; do
+              # buildozer 把 SDK 装在 ~/.buildozer/android/platform/android-sdk，
+              # 所以 build-tools 在 .../platform/android-sdk/build-tools/<ver>/ 下面，
+              # 不能写成 .../platform/build-tools/（少一层，必然找不到）。
+              for p in \
+                   /home/user/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
+                   /root/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
+                   "$HOME"/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
+                   /opt/android-sdk/build-tools/*/apksigner \
+                   "${ANDROID_HOME:-/nonexistent}"/build-tools/*/apksigner ; do
                 if [ -x "$p" ]; then SIGNER="$p"; break; fi
               done
               if [ -z "$SIGNER" ]; then
-                echo "!!! 容器里找不到 apksigner，跳过重签名"
+                echo ">>> 固定路径都没命中，改用 find 搜"
+                SIGNER=$(find /home/user /root /opt -maxdepth 9 -name apksigner -type f 2>/dev/null | head -1)
+              fi
+              if [ -z "$SIGNER" ]; then
+                echo "!!! 容器里仍找不到 apksigner"
                 exit 3
               fi
               echo ">>> 使用签名工具: $SIGNER"
               APK=$(ls bin/*.apk 2>/dev/null | head -1)
               if [ -z "$APK" ]; then
-                echo "!!! bin/ 里没有 APK，跳过重签名"
+                echo "!!! bin/ 里没有 APK"
                 exit 4
               fi
               echo ">>> 待签名: $APK"
@@ -303,10 +314,22 @@ jobs:
                 --out "$APK.signed" "$APK"
               mv "$APK.signed" "$APK"
               echo ">>> 签名信息："
-              "$SIGNER" verify --print-certs "$APK" | head -6
-              echo ">>> 重签名完成"
-            ' || echo ">>> !! 重签名未完成，APK 仍是 debug 签名（可安装，但下次需先卸载）"
+              "$SIGNER" verify --print-certs "$APK" > certs.txt 2>&1 || true
+              head -8 certs.txt
+              # 硬校验：签完的证书必须是我们的 CN，否则说明签名没生效
+              if ! grep -q "Tiangong ERP" certs.txt; then
+                echo "!!! 签完的 APK 证书不是 Tiangong ERP，判定失败"
+                exit 5
+              fi
+              rm -f certs.txt
+              echo ">>> 重签名完成（证书已确认为 Tiangong ERP）"
+            ' || SIGN_RC=$?
+          SIGN_RC=${SIGN_RC:-0}
           rm -f tiangong.keystore
+          if [ "$SIGN_RC" != "0" ]; then
+            echo "::error::重签名失败（退出码 $SIGN_RC），APK 仍是 debug 签名 —— 以后覆盖安装必须先卸载，手机数据会丢"
+            exit 1
+          fi
 
           # 统一命名：带上版本号与架构，一眼看出装的是哪个
           for f in bin/*.apk; do
