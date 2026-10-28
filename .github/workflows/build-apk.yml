@@ -218,6 +218,13 @@ jobs:
           # 这个 141 当作整条命令失败 → 本步骤判红 → 上传 APK 那步被跳过，
           # 白白误判成"构建失败"。改成只取 docker 自己的退出码。
           chmod -R a+rwX .
+          # 【关键】把容器的 ~/.buildozer 挂到宿主机目录。
+          # 原因：buildozer 把 Android SDK（apksigner 就在里面）装在容器 $HOME/.buildozer，
+          # 而 docker run 每次都是全新容器 —— 不挂出来，构建容器一退出 SDK 就随之销毁，
+          # 后面「重签名」步骤换个容器进同一个镜像也找不到 apksigner
+          # （这正是上一版签名被静默跳过、包里其实是 debug 签名的根因）。
+          mkdir -p .ci_cache/buildozer
+          chmod -R a+rwX .ci_cache
           # 两个关键点，缺一不可：
           # 1) 必须用镜像的默认 entrypoint。它会把容器内用户切成宿主 UID；
           #    若手动指定 --entrypoint bash，容器会以 root 运行，buildozer 会弹
@@ -234,6 +241,7 @@ jobs:
           # （例如 shell 的数组变量）整个文件直接作废，连一个作业都起不来。
           yes | docker run --rm -i \
             -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/.ci_cache/buildozer":/home/user/.buildozer \
             -w /home/user/hostcwd \
             ghcr.io/kivy/buildozer:latest \
             android debug > build_output.txt 2>&1
@@ -273,6 +281,7 @@ jobs:
             -e KEY_ALIAS \
             -e KEY_PASSWORD \
             -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/.ci_cache/buildozer":/home/user/.buildozer \
             -w /home/user/hostcwd \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
@@ -284,18 +293,22 @@ jobs:
               # 不能写成 .../platform/build-tools/（少一层，必然找不到）。
               for p in \
                    /home/user/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
-                   /root/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
+                   /home/user/hostcwd/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
                    "$HOME"/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
+                   /root/.buildozer/android/platform/android-sdk/build-tools/*/apksigner \
                    /opt/android-sdk/build-tools/*/apksigner \
                    "${ANDROID_HOME:-/nonexistent}"/build-tools/*/apksigner ; do
                 if [ -x "$p" ]; then SIGNER="$p"; break; fi
               done
               if [ -z "$SIGNER" ]; then
                 echo ">>> 固定路径都没命中，改用 find 搜"
-                SIGNER=$(find /home/user /root /opt -maxdepth 9 -name apksigner -type f 2>/dev/null | head -1)
+                SIGNER=$(find /home/user /root /opt -maxdepth 12 -name apksigner -type f 2>/dev/null | head -1)
               fi
               if [ -z "$SIGNER" ]; then
-                echo "!!! 容器里仍找不到 apksigner"
+                echo "!!! 容器里仍找不到 apksigner，列出已知目录帮助定位："
+                ls -d /home/user/.buildozer 2>/dev/null || echo "    /home/user/.buildozer 不存在"
+                ls /home/user/.buildozer/android/platform 2>/dev/null | head -5
+                ls -d /home/user/.buildozer/android/platform/android-sdk/build-tools/* 2>/dev/null | head -5
                 exit 3
               fi
               echo ">>> 使用签名工具: $SIGNER"
