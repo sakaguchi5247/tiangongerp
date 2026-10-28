@@ -15,7 +15,7 @@ source.include_exts = py,png,sql
 # ---------------- 依赖（本项目零第三方依赖） ----------------
 # 只要 Python 运行时本身，不引入 Kivy / Flask / 任何库，
 # 因此无需任何 recipe、无需交叉编译 C 扩展
-requirements = python3
+requirements = python3,pyjnius
 
 # ---------------- 屏幕 ----------------
 # 强制竖屏（单手录入单据更顺手；如想横屏看表格可改回 sensor）
@@ -43,14 +43,14 @@ p4a.port = 8765
 
 # ---------------- 图标 ----------------
 # 复用天宫徽标（128px 宫殿徽标）
-icon.filename = %(source.dir)s/erp/ui/assets/icon.png
-presplash.filename = %(source.dir)s/erp/ui/assets/icon.png
+# v2.1：安卓图标统一为「白标 + 品牌深红底 #701414」，与 Web 顶栏、桌面侧栏同款；
+# 这一套由 _gen_android_icons.py 从桌面端 icon.ico 母版生成，换母版重跑脚本即可。
+icon.filename = %(source.dir)s/erp/ui/assets/android/launcher.png
+presplash.filename = %(source.dir)s/erp/ui/assets/android/presplash.png
 
 # 自适应图标（Android 8.0+ 生效）：透明前景 + 纯黑背景
-
-# 自适应图标（Android 8.0+ 生效）：透明前景 + 纯黑背景
-icon.adaptive_foreground.filename = %(source.dir)s/erp/ui/assets/icon_fg.png
-icon.adaptive_background.filename = %(source.dir)s/erp/ui/assets/icon_bg.png
+icon.adaptive_foreground.filename = %(source.dir)s/erp/ui/assets/android/icon_fg.png
+icon.adaptive_background.filename = %(source.dir)s/erp/ui/assets/android/icon_bg.png
 
 p4a.branch = develop
 
